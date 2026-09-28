@@ -1,0 +1,6 @@
+{
+  "name": "Aegis Sentinel Security Dashboard",
+  "description": "Defensive telemetry, cryptographic compliance, and security operations dashboard for enterprise threat monitoring.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
