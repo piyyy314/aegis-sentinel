@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   ShieldCheck,
   ShieldAlert,
@@ -39,7 +39,18 @@ import {
   Zap,
   Printer,
   Sparkles,
-  ExternalLink
+  ExternalLink,
+  Play,
+  Pause,
+  ChevronUp,
+  ChevronDown,
+  Trash2,
+  Volume2,
+  VolumeX,
+  Flame,
+  RotateCcw,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -276,6 +287,829 @@ export function DashboardCard({
         </div>
       )}
     </div>
+  );
+}
+
+// ============================================================================
+// Active Threat Console Component
+// ============================================================================
+
+export interface StreamThreatEvent {
+  id: string;
+  timestamp: string;
+  source: string;
+  category: 'Network' | 'Integrity' | 'Cryptography' | 'Access';
+  severity: 'nominal' | 'warning' | 'critical';
+  summary: string;
+  target: string;
+  details: string;
+  mitreRef?: string;
+  rawPayload?: string;
+}
+
+export interface ActiveThreatConsoleProps {
+  onEventStreamed?: (event: StreamThreatEvent) => void;
+  onInspectEvent?: (event: TelemetryEvent) => void;
+  className?: string;
+}
+
+const STREAM_TELEMETRY_TEMPLATES: Omit<StreamThreatEvent, 'id' | 'timestamp'>[] = [
+  {
+    source: 'AEGIS_LATTICE_CORE',
+    category: 'Cryptography',
+    severity: 'nominal',
+    summary: 'ML-KEM-768 polynomial vector key decapsulation validated on edge enclave',
+    target: 'KEM Edge Cluster #02',
+    details: 'NIST FIPS 203 lattice coordinates verified. Matrix noise variance well within nominal range.',
+    mitreRef: 'M1041 (Encrypt Sensitive Information)',
+    rawPayload: 'ML_KEM_768_CIPHERTEXT: [POLY_DEG: 256, Q: 3329] -> SHA3_256_SS_VALID',
+  },
+  {
+    source: 'EDR_KERNEL_WATCHDOG',
+    category: 'Integrity',
+    severity: 'critical',
+    summary: 'Memory Process Doppelgänging signature intercepted on host worker-08',
+    target: 'NTFS Transactional Manager (TxF) -> svchost.exe',
+    details: 'Attempted stealthy process replacement prior to commit. Hardware-assisted breakpoint guard blocked write.',
+    mitreRef: 'T1055.012 (Process Doppelgänging)',
+    rawPayload: 'TAMPER_ALERT: NtCreateSection over transacted file -> ACCESS_DENIED',
+  },
+  {
+    source: 'BGP_RPKI_MONITOR',
+    category: 'Network',
+    severity: 'nominal',
+    summary: 'Route Origin Authorization (ROA) cryptographically validated on AS209845',
+    target: 'Core Peering Transit Gateway',
+    details: 'BGP prefix 198.51.100.0/24 verified against cryptographic trust anchor. Zero route hijacking.',
+    mitreRef: 'T1584.004 (Compromise Infrastructure)',
+    rawPayload: 'RPKI_VALIDATION: TRUST_ANCHOR=ARIN_TAL | ROA_STATUS=VALID_CRYPTOGRAPHIC',
+  },
+  {
+    source: 'EDR_SYSCALL_HOOK',
+    category: 'Integrity',
+    severity: 'critical',
+    summary: 'Hardware-assisted unhooking attempt detected targeting ntdll.dll in memory',
+    target: 'Core Telemetry Host [PID: 4912]',
+    details: 'Junk code / entropy manipulation detected on syscall stubs. Restored legitimate EDR hook table.',
+    mitreRef: 'T1562.001 (Impair Defenses: Disable or Modify Tools)',
+    rawPayload: 'EAT_TAMPER: Syscall 0x0018 stub overwrite attempt -> RESTORED_FROM_NATIVE',
+  },
+  {
+    source: 'FIPS_204_VERIFIER',
+    category: 'Cryptography',
+    severity: 'nominal',
+    summary: 'ML-DSA-65 (Dilithium) digital signature verified on root satellite firmware',
+    target: 'VSAT Firmware Partition A',
+    details: 'Post-quantum signature mathematical validation passed with zero modulus relaxation.',
+    mitreRef: 'M1045 (Code Signing)',
+    rawPayload: 'FIPS204_SIG: ML-DSA-65 [MATRIX_K: 6, L: 5] -> VALID_ATTESTATION',
+  },
+  {
+    source: 'VSAT_RF_MONITOR',
+    category: 'Network',
+    severity: 'warning',
+    summary: 'High-frequency micro-Doppler RF phase jitter detected on 14.25 GHz uplink band',
+    target: 'Orbital Transponder Primary Feed',
+    details: 'Carrier frequency anomaly offset of +0.038 Hz observed. SDR adaptive beamforming adjusted.',
+    mitreRef: 'T1499 (Endpoint Denial of Service)',
+    rawPayload: 'RF_PHASE_SDR: CARRIER=14.25GHz | PHASE_NOISE=-92dBc/Hz | AUTO_CORRECT=ON',
+  },
+  {
+    source: 'DNS_COVERT_DEFENSE',
+    category: 'Network',
+    severity: 'warning',
+    summary: 'High-entropy base64 DNS TXT query volume exceeded baseline threshold',
+    target: 'Internal DNS Resolver 10.0.0.53',
+    details: 'Potential DNS exfiltration tunnel. Outbound resolution throttled and payload logged.',
+    mitreRef: 'T1071.004 (Application Layer Protocol: DNS)',
+    rawPayload: 'DNS_EXFIL_HEURISTIC: TXT_BURST=14req/s | ENTROPY=5.12bits | STATUS=THROTTLED',
+  },
+  {
+    source: 'SIEM_CORRELATOR',
+    category: 'Access',
+    severity: 'critical',
+    summary: 'Pass-the-Hash / NTLM relay attempt blocked on telemetry ingestion bridge',
+    target: 'API Edge Gateway (10.10.4.19)',
+    details: 'Cross-protocol NTLM authentication reflection detected from untrusted perimeter subnet.',
+    mitreRef: 'T1550.002 (Pass the Hash)',
+    rawPayload: 'AUTH_TAMPER: NTLM_CHALLENGE_RELAY -> EPA_REJECTED (Extended Protection for Auth)',
+  },
+  {
+    source: 'CONTAINER_SELINUX_GUARD',
+    category: 'Integrity',
+    severity: 'nominal',
+    summary: 'Container isolation boundary enforcement validated on Kubernetes worker #06',
+    target: 'Worker Node Pod k8s-crypto-pqc-9f',
+    details: 'AppArmor and seccomp profiles verified active. All disallowed system calls trapped.',
+    rawPayload: 'SECCOMP_AUDIT: SYS_PTRACE=DENIED | SYS_CHROOT=RESTRICTED | STATUS=NOMINAL',
+  },
+  {
+    source: 'QKD_SIMULATOR_CORE',
+    category: 'Cryptography',
+    severity: 'nominal',
+    summary: 'Simulated quantum key distribution stream generated 1024-bit quantum-safe entropy pool',
+    target: 'Hardware Security Module (HSM-01)',
+    details: 'BB84 protocol simulation confirmed 0.002 quantum bit error rate (QBER), well within threshold.',
+    mitreRef: 'M1041 (Encrypt Sensitive Information)',
+    rawPayload: 'QBER_METRIC: 0.2% [THRESHOLD: < 11%] -> 1024_BIT_KEY_DISTRIBUTED',
+  },
+];
+
+export function ActiveThreatConsole({
+  onEventStreamed,
+  onInspectEvent,
+  className = '',
+}: ActiveThreatConsoleProps) {
+  const [isStreaming, setIsStreaming] = useState(true);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [typingSpeed, setTypingSpeed] = useState<'normal' | 'fast' | 'turbo'>('normal');
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [streamFilter, setStreamFilter] = useState<'all' | 'critical' | 'warning'>('all');
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [copiedSuccess, setCopiedSuccess] = useState(false);
+  const [hasAlertFlash, setHasAlertFlash] = useState(false);
+
+  const [streamHistory, setStreamHistory] = useState<StreamThreatEvent[]>([
+    {
+      id: 'THR-8941',
+      timestamp: '13:48:21.104',
+      source: 'AEGIS_FIM_CORE',
+      category: 'Integrity',
+      severity: 'nominal',
+      summary: 'Verified cryptographic hashes on 38 mission-critical configs',
+      target: '/etc/satcom/modem_gateway.conf',
+      details: 'Automated SHA-256 integrity baseline match. Zero unauthorized drift detected across protected root partition.',
+      rawPayload: 'SHA256: 7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069 [MATCH 100%]',
+    },
+    {
+      id: 'THR-8940',
+      timestamp: '13:45:09.482',
+      source: 'VSAT_RF_MONITOR',
+      category: 'Network',
+      severity: 'warning',
+      summary: 'Carrier signal SNR dropped by 1.8 dB on secondary Ku-band transponder',
+      target: 'Transponder 4B (Downlink 11.74 GHz)',
+      details: 'Minor atmospheric attenuation or orbital drift. Micro-Doppler signature remained within baseline nominal tolerances.',
+      rawPayload: 'FREQ: 11.742GHz | SNR: 14.2dB -> 12.4dB | DOPPLER_DEV: +0.014 rad',
+    },
+    {
+      id: 'THR-8939',
+      timestamp: '13:42:33.891',
+      source: 'HONEYPOT_SENTRY',
+      category: 'Access',
+      severity: 'nominal',
+      summary: 'Probing connection dropped and logged on isolated trap port 22222',
+      target: '198.51.100.84 -> Port 22222',
+      details: 'Adversary scanner received synthetic banner. Immediate rate-limiting and temporary IP quarantine rule enacted.',
+      rawPayload: 'SRC: 198.51.100.84:55120 | SYN_FLAG | BANNER: OpenSSH_7.4p1-decoy',
+    },
+    {
+      id: 'THR-8938',
+      timestamp: '13:30:14.318',
+      source: 'CRYPTO_AUDIT_DAEMON',
+      category: 'Cryptography',
+      severity: 'warning',
+      summary: 'Internal microservice negotiated TLS 1.2 with legacy RSA-2048 key exchange',
+      target: 'auth-service.internal:8443',
+      details: 'Identified non-PQC cipher suite (TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384). Flagged for mandatory migration to ML-KEM/Kyber-768 hybrid.',
+      mitreRef: 'M1041 (Encrypt Sensitive Information)',
+      rawPayload: 'CIPHER_SUITE: 0xC030 (TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) [NON-PQC]',
+    },
+    {
+      id: 'THR-8937',
+      timestamp: '13:12:05.902',
+      source: 'SIEM_CORRELATOR',
+      category: 'Access',
+      severity: 'critical',
+      summary: 'High-frequency Kerberos TGS request with RC4-HMAC ticket encryption',
+      target: 'Active Directory Domain Controller (Event ID 4769)',
+      details: 'Potential credential audit probe / Kerberoasting reconnaissance. User account: svc_satcom_telemetry. SIEM rule triggered threshold alert.',
+      mitreRef: 'T1558.003 (Steal or Forge Kerberos Tickets)',
+      rawPayload: 'KERBEROS_ENC_TYPE: 0x17 (RC4-HMAC) | TGS-REQ SPN: MSSQLSvc/db01.corp',
+    },
+  ]);
+
+  const [currentEvent, setCurrentEvent] = useState<StreamThreatEvent>({
+    id: 'THR-8942',
+    timestamp: '13:50:02.148',
+    source: 'AEGIS_SENTINEL_MONITOR',
+    category: 'Network',
+    severity: 'nominal',
+    summary: 'Active threat stream telemetry link established with local sensor daemon',
+    target: 'Local Sensor Daemon /dev/telemetry0',
+    details: 'Continuous real-time threat ingestion bus listening on IPC domain socket.',
+    rawPayload: 'BUS_LINK: ACTIVE_STREAM_INITIALIZED [BUFFER_SIZE: 1024KB]',
+  });
+
+  const [displayedText, setDisplayedText] = useState('');
+  const [isTyping, setIsTyping] = useState(true);
+
+  const templateIndexRef = useRef(0);
+  const eventCounterRef = useRef(8943);
+  const terminalBottomRef = useRef<HTMLDivElement>(null);
+  const charIndexRef = useRef(0);
+
+  // Audio synthesizer feedback for cyber typewriter clicks
+  const playAudioFeedback = useCallback(
+    (isCritical = false) => {
+      if (!soundEnabled) return;
+      try {
+        const AudioContextClass =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+        if (!AudioContextClass) return;
+        const ctx = new AudioContextClass();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        if (isCritical) {
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(880, ctx.currentTime);
+          osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.12);
+          gain.gain.setValueAtTime(0.04, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.12);
+        } else {
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(750 + Math.random() * 150, ctx.currentTime);
+          gain.gain.setValueAtTime(0.015, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.025);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.025);
+        }
+      } catch {
+        // Audio policy restrictions ignored
+      }
+    },
+    [soundEnabled]
+  );
+
+  // Full formatted line for typewriter
+  const fullTextToType = useMemo(() => {
+    if (!currentEvent) return '';
+    const mitre = currentEvent.mitreRef ? ` [${currentEvent.mitreRef}]` : '';
+    return `[${currentEvent.timestamp}] [${currentEvent.severity.toUpperCase()}] [${currentEvent.source}] -> ${currentEvent.target}${mitre} :: ${currentEvent.summary}`;
+  }, [currentEvent]);
+
+  // Typewriter speed milliseconds per char
+  const charDelay = useMemo(() => {
+    if (typingSpeed === 'turbo') return 4;
+    if (typingSpeed === 'fast') return 12;
+    return 24;
+  }, [typingSpeed]);
+
+  // Typewriter streaming loop
+  useEffect(() => {
+    if (!isStreaming) return;
+
+    let timeoutId: NodeJS.Timeout;
+
+    if (isTyping) {
+      if (charIndexRef.current < fullTextToType.length) {
+        timeoutId = setTimeout(() => {
+          charIndexRef.current += 1;
+          setDisplayedText(fullTextToType.slice(0, charIndexRef.current));
+
+          // Periodic click sound on word boundaries
+          if (charIndexRef.current % 4 === 0) {
+            playAudioFeedback(currentEvent.severity === 'critical');
+          }
+        }, charDelay);
+      } else {
+        // Completed typing this line
+        setIsTyping(false);
+
+        // Pause before pushing to history and starting next line
+        const readPause = typingSpeed === 'turbo' ? 600 : typingSpeed === 'fast' ? 1400 : 2500;
+        timeoutId = setTimeout(() => {
+          // Push to history
+          setStreamHistory((prev) => [currentEvent, ...prev.slice(0, 99)]);
+          onEventStreamed?.(currentEvent);
+
+          // Prepare next event
+          const template =
+            STREAM_TELEMETRY_TEMPLATES[
+              templateIndexRef.current % STREAM_TELEMETRY_TEMPLATES.length
+            ];
+          templateIndexRef.current += 1;
+          eventCounterRef.current += 1;
+
+          const now = new Date();
+          const timeStr = `${now.toLocaleTimeString('en-GB')}.${String(
+            now.getMilliseconds()
+          ).padStart(3, '0')}`;
+
+          const nextEvt: StreamThreatEvent = {
+            ...template,
+            id: `THR-${eventCounterRef.current}`,
+            timestamp: timeStr,
+          };
+
+          charIndexRef.current = 0;
+          setCurrentEvent(nextEvt);
+          setDisplayedText('');
+          setIsTyping(true);
+        }, readPause);
+      }
+    }
+
+    return () => clearTimeout(timeoutId);
+  }, [
+    isStreaming,
+    isTyping,
+    fullTextToType,
+    charDelay,
+    currentEvent,
+    typingSpeed,
+    onEventStreamed,
+    playAudioFeedback,
+  ]);
+
+  // Auto-scroll terminal history to top or bottom
+  useEffect(() => {
+    if (autoScroll && !isCollapsed) {
+      terminalBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [streamHistory, autoScroll, isCollapsed]);
+
+  // Inject Critical Threat Simulation handler
+  const handleInjectThreat = () => {
+    setHasAlertFlash(true);
+    setTimeout(() => setHasAlertFlash(false), 1600);
+    playAudioFeedback(true);
+
+    eventCounterRef.current += 1;
+    const now = new Date();
+    const timeStr = `${now.toLocaleTimeString('en-GB')}.${String(
+      now.getMilliseconds()
+    ).padStart(3, '0')}`;
+
+    const criticalInjections = [
+      {
+        source: 'AEGIS_LATTICE_COPROCESSOR',
+        category: 'Cryptography' as const,
+        severity: 'critical' as const,
+        summary:
+          'Quantum side-channel collision attempt detected on Kyber-768 lattice coprocessor - Hardware unhooking neutralized',
+        target: 'Crypto Accelerator FPGA #01',
+        details:
+          'High-frequency electromagnetic side-channel emission anomaly detected during polynomial NTT multiplication. Clock jitter active mitigation engaged.',
+        mitreRef: 'T1055 (Process Injection)',
+        rawPayload: 'EM_FAULT_DETECTION: CLOCK_GLITCH_BLOCKED [STATUS: AUTONOMOUS_QUARANTINE]',
+      },
+      {
+        source: 'SIEM_CORRELATOR',
+        category: 'Access' as const,
+        severity: 'critical' as const,
+        summary:
+          'Kerberoasting ticket-granting probe with RC4 encryption burst detected across 6 administrative SPNs',
+        target: 'Active Directory KDC (Port 88)',
+        details:
+          'Automated adversary tool requested ticket hashes for offline cracking. IP connection dropped and SPN account passphrases rotated.',
+        mitreRef: 'T1558.003 (Steal or Forge Kerberos Tickets)',
+        rawPayload: 'TGS_BURST: SPN_COUNT=6 | ENC_TYPE=RC4_HMAC | MITIGATION=ACCOUNT_CONTAINED',
+      },
+      {
+        source: 'EDR_BEHAVIOR_ANALYZER',
+        category: 'Integrity' as const,
+        severity: 'critical' as const,
+        summary:
+          'Process Doppelgänging memory transaction rollback attempt intercepted on core node',
+        target: 'Worker Kernel Memory / svchost.exe',
+        details:
+          'Transactional NTFS section creation intercepted before commit. Process memory flushed and threat signature cataloged.',
+        mitreRef: 'T1055.012 (Process Doppelgänging)',
+        rawPayload: 'TXF_ROLLBACK: ANOMALY_SEVERITY_10 [TRAPPED_IN_SANDBOX]',
+      },
+    ];
+
+    const chosen = criticalInjections[eventCounterRef.current % criticalInjections.length];
+    const urgentEvt: StreamThreatEvent = {
+      ...chosen,
+      id: `THR-${eventCounterRef.current}`,
+      timestamp: timeStr,
+    };
+
+    charIndexRef.current = 0;
+    setCurrentEvent(urgentEvt);
+    setDisplayedText('');
+    setIsTyping(true);
+    if (!isStreaming) setIsStreaming(true);
+  };
+
+  // Filtered terminal history
+  const filteredHistory = useMemo(() => {
+    return streamHistory.filter((item) => {
+      const matchesFilter =
+        streamFilter === 'all'
+          ? true
+          : streamFilter === 'critical'
+          ? item.severity === 'critical'
+          : item.severity === 'critical' || item.severity === 'warning';
+
+      const matchesSearch =
+        searchTerm === ''
+          ? true
+          : item.summary.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            item.source.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            item.target.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            item.id.toLowerCase().includes(searchTerm.toLowerCase());
+
+      return matchesFilter && matchesSearch;
+    });
+  }, [streamHistory, streamFilter, searchTerm]);
+
+  // Copy raw console logs
+  const handleCopyLogs = () => {
+    const textLines = streamHistory.map(
+      (e) =>
+        `[${e.timestamp}] [${e.severity.toUpperCase()}] [${e.source}] Target: ${e.target} - ${e.summary} | Payload: ${e.rawPayload || 'N/A'}`
+    );
+    navigator.clipboard.writeText(textLines.join('\n'));
+    setCopiedSuccess(true);
+    setTimeout(() => setCopiedSuccess(false), 2000);
+  };
+
+  // Clear buffer
+  const handleClearBuffer = () => {
+    setStreamHistory([]);
+  };
+
+  // Stats
+  const criticalCount = streamHistory.filter((e) => e.severity === 'critical').length;
+  const warningCount = streamHistory.filter((e) => e.severity === 'warning').length;
+  const nominalCount = streamHistory.filter((e) => e.severity === 'nominal').length;
+
+  // Percentage typed of current event
+  const typingProgress = fullTextToType.length > 0 ? (displayedText.length / fullTextToType.length) * 100 : 0;
+
+  return (
+    <aside
+      aria-label="Active Threat Console"
+      className={`border-t bg-slate-950/95 backdrop-blur-md transition-all duration-300 z-20 ${
+        hasAlertFlash
+          ? 'border-rose-500 shadow-[0_0_25px_rgba(244,63,94,0.35)]'
+          : 'border-slate-800 shadow-xl'
+      } ${className}`}
+    >
+      {/* ==================================================================== */}
+      {/* Console Header Bar                                                   */}
+      {/* ==================================================================== */}
+      <div className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 bg-slate-900/60">
+        {/* Left: Identity, Stream Status Beacon & Buffer Counts */}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2.5 w-2.5">
+              {isStreaming ? (
+                <>
+                  <span
+                    className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${
+                      hasAlertFlash ? 'bg-rose-400' : 'bg-emerald-400'
+                    }`}
+                  />
+                  <span
+                    className={`relative inline-flex rounded-full h-2.5 w-2.5 ${
+                      hasAlertFlash ? 'bg-rose-500' : 'bg-emerald-500'
+                    }`}
+                  />
+                </>
+              ) : (
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500" />
+              )}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="text-xs font-bold tracking-wider font-mono text-white">
+                ACTIVE THREAT CONSOLE
+              </span>
+              <span className="text-[10px] font-mono text-slate-400 hidden sm:inline">
+                [v4.2 TAIL]
+              </span>
+            </div>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-1.5 pl-2 border-l border-slate-800 text-[11px] font-mono text-slate-400">
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                isStreaming
+                  ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-amber-950/80 text-amber-400 border border-amber-500/30'
+              }`}
+            >
+              {isStreaming ? 'STREAMING' : 'PAUSED'}
+            </span>
+            <span className="text-slate-400">|</span>
+            <span className="text-slate-400">Buf:</span>
+            <span className="text-cyan-400 font-semibold">{streamHistory.length}</span>
+            <span className="text-slate-400 hidden md:inline">
+              (
+              <span className="text-rose-400 font-semibold">{criticalCount} Crit</span> ·{' '}
+              <span className="text-amber-400 font-semibold">{warningCount} Warn</span> ·{' '}
+              <span className="text-emerald-400">{nominalCount} Nom</span>)
+            </span>
+          </div>
+        </div>
+
+        {/* Right: Controls (Play/Pause, Speed, Simulate Threat, Sound, Expand/Collapse) */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* Simulate Inbound Incident Button */}
+          <button
+            type="button"
+            onClick={handleInjectThreat}
+            title="Inject simulated high-severity critical attack into stream"
+            className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-rose-300 bg-rose-950/60 hover:bg-rose-900/80 border border-rose-500/40 hover:border-rose-400 rounded transition-colors shadow-sm cursor-pointer"
+          >
+            <Flame className="w-3 h-3 text-rose-400 animate-pulse" />
+            <span className="hidden sm:inline">Inject Threat</span>
+            <span className="sm:hidden">Threat</span>
+          </button>
+
+          {/* Pause / Play Stream */}
+          <button
+            type="button"
+            onClick={() => setIsStreaming(!isStreaming)}
+            title={isStreaming ? 'Pause incoming telemetry stream' : 'Resume live stream'}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded transition-colors cursor-pointer"
+          >
+            {isStreaming ? (
+              <>
+                <Pause className="w-3 h-3 text-amber-400" />
+                <span className="hidden md:inline">Pause</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-3 h-3 text-emerald-400" />
+                <span className="hidden md:inline">Resume</span>
+              </>
+            )}
+          </button>
+
+          {/* Speed Selector */}
+          <div className="hidden sm:flex items-center bg-slate-800/90 rounded border border-slate-700/60 p-0.5 text-[10px] font-mono">
+            {(['normal', 'fast', 'turbo'] as const).map((spd) => (
+              <button
+                key={spd}
+                type="button"
+                onClick={() => setTypingSpeed(spd)}
+                title={`Typewriter speed: ${spd}`}
+                className={`px-1.5 py-0.5 rounded capitalize transition-colors ${
+                  typingSpeed === spd
+                    ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {spd === 'normal' ? '1x' : spd === 'fast' ? '2x' : '⚡'}
+              </button>
+            ))}
+          </div>
+
+          {/* Sound Synthesizer Toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              setSoundEnabled(!soundEnabled);
+              if (!soundEnabled) playAudioFeedback(false);
+            }}
+            title={soundEnabled ? 'Mute terminal audio' : 'Enable terminal audio feedback'}
+            className={`p-1.5 rounded transition-colors cursor-pointer ${
+              soundEnabled
+                ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+          >
+            {soundEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+          </button>
+
+          {/* Copy Logs */}
+          <button
+            type="button"
+            onClick={handleCopyLogs}
+            title="Copy terminal stream logs to clipboard"
+            className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors cursor-pointer"
+          >
+            {copiedSuccess ? (
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <Copy className="w-3.5 h-3.5" />
+            )}
+          </button>
+
+          {/* Clear Buffer */}
+          <button
+            type="button"
+            onClick={handleClearBuffer}
+            title="Clear event buffer"
+            className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors cursor-pointer hidden md:block"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Collapse / Expand Toggle */}
+          <button
+            type="button"
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            title={isCollapsed ? 'Expand Active Threat Console' : 'Collapse to compact ticker'}
+            className="flex items-center gap-1 p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors cursor-pointer"
+          >
+            {isCollapsed ? <ChevronUp className="w-4 h-4 text-cyan-400" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+
+      {/* ==================================================================== */}
+      {/* Live Typewriter Streaming Marquee Line                                */}
+      {/* ==================================================================== */}
+      <div className="px-4 py-3 bg-slate-950 font-mono text-xs border-b border-slate-900 relative">
+        <div className="flex items-start gap-2.5">
+          <div className="shrink-0 flex items-center gap-1 text-[11px] font-semibold text-slate-500 select-none pt-0.5">
+            <span className="text-cyan-400">aegis@threat-bus</span>
+            <span>$</span>
+          </div>
+
+          <div className="flex-1 min-w-0 leading-relaxed break-all sm:break-normal">
+            {/* Structured tokens display for the actively typing line */}
+            <span className="text-slate-400">[{currentEvent.timestamp}] </span>
+            <span
+              className={`inline-block px-1.5 py-0.2 rounded text-[10px] font-bold mr-1.5 ${
+                currentEvent.severity === 'critical'
+                  ? 'bg-rose-950 text-rose-300 border border-rose-500/50'
+                  : currentEvent.severity === 'warning'
+                  ? 'bg-amber-950 text-amber-300 border border-amber-500/50'
+                  : 'bg-emerald-950 text-emerald-300 border border-emerald-500/50'
+              }`}
+            >
+              {currentEvent.severity.toUpperCase()}
+            </span>
+            <span className="text-cyan-300 font-semibold">[{currentEvent.source}]</span>{' '}
+            <span className="text-slate-400">→</span>{' '}
+            <span className="text-slate-200 font-medium">{currentEvent.target}</span>{' '}
+            {currentEvent.mitreRef && (
+              <span className="text-amber-300 font-medium">[{currentEvent.mitreRef}] </span>
+            )}
+            <span className="text-slate-300">:: </span>
+            <span
+              className={
+                currentEvent.severity === 'critical'
+                  ? 'text-rose-200 font-medium'
+                  : currentEvent.severity === 'warning'
+                  ? 'text-amber-200'
+                  : 'text-slate-300'
+              }
+            >
+              {/* If displayed text contains summary portion, render it; else type out */}
+              {displayedText.length > 0 ? displayedText : 'Connecting telemetry pipe...'}
+            </span>
+            {/* Blinking Block Cursor */}
+            <span
+              className={`inline-block w-2 h-3.5 ml-1 align-middle ${
+                currentEvent.severity === 'critical'
+                  ? 'bg-rose-400'
+                  : currentEvent.severity === 'warning'
+                  ? 'bg-amber-400'
+                  : 'bg-cyan-400'
+              } ${isTyping ? 'animate-pulse' : 'opacity-70'}`}
+            />
+          </div>
+        </div>
+
+        {/* Typing progress bar */}
+        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-slate-900">
+          <div
+            className={`h-full transition-all duration-75 ${
+              currentEvent.severity === 'critical'
+                ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]'
+                : currentEvent.severity === 'warning'
+                ? 'bg-amber-500'
+                : 'bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.8)]'
+            }`}
+            style={{ width: `${typingProgress}%` }}
+          />
+        </div>
+      </div>
+
+      {/* ==================================================================== */}
+      {/* Expanded Terminal Stream Buffer View                                 */}
+      {/* ==================================================================== */}
+      {!isCollapsed && (
+        <div className="bg-slate-950">
+          {/* Subheader Filter Bar for Terminal Log Buffer */}
+          <div className="px-4 py-1.5 flex flex-wrap items-center justify-between gap-2 border-b border-slate-900 bg-slate-900/40 text-[11px] font-mono">
+            <div className="flex items-center gap-2">
+              <span className="text-slate-400">Filter Severity:</span>
+              <div className="flex items-center gap-1">
+                {(['all', 'critical', 'warning'] as const).map((lvl) => (
+                  <button
+                    key={lvl}
+                    type="button"
+                    onClick={() => setStreamFilter(lvl)}
+                    className={`px-2 py-0.5 rounded capitalize transition-colors ${
+                      streamFilter === lvl
+                        ? 'bg-cyan-500/20 text-cyan-300 font-bold border border-cyan-500/30'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                    }`}
+                  >
+                    {lvl === 'all' ? 'All Events' : lvl === 'critical' ? 'Critical Only' : 'Warning+'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              {/* Search in console buffer */}
+              <div className="relative">
+                <Search className="w-3 h-3 text-slate-500 absolute left-2 top-1.5" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Filter stream logs..."
+                  className="pl-6 pr-2 py-0.5 bg-slate-900 border border-slate-800 rounded text-[11px] text-white placeholder-slate-500 focus:outline-hidden focus:border-cyan-500 w-36 sm:w-48"
+                />
+              </div>
+
+              {/* Auto Scroll Checkbox */}
+              <label className="flex items-center gap-1.5 text-slate-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoScroll}
+                  onChange={(e) => setAutoScroll(e.target.checked)}
+                  className="rounded bg-slate-900 border-slate-800 text-cyan-500 focus:ring-0 w-3 h-3 cursor-pointer"
+                />
+                <span className="text-[10px]">Stick to Bottom</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Terminal History Scroll Box */}
+          <div className="max-h-48 overflow-y-auto p-3 font-mono text-[11px] space-y-1.5 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-slate-950">
+            {filteredHistory.length === 0 ? (
+              <div className="py-6 text-center text-slate-400 italic">
+                No events in buffer match filter criteria. Incoming stream will populate below.
+              </div>
+            ) : (
+              filteredHistory.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => onInspectEvent?.(item)}
+                  className={`p-1.5 rounded transition-colors cursor-pointer group flex flex-col sm:flex-row sm:items-center justify-between gap-1 border ${
+                    item.severity === 'critical'
+                      ? 'bg-rose-950/20 hover:bg-rose-950/40 border-rose-900/40 text-rose-200'
+                      : item.severity === 'warning'
+                      ? 'bg-amber-950/20 hover:bg-amber-950/40 border-amber-900/40 text-amber-200'
+                      : 'bg-slate-900/40 hover:bg-slate-900/80 border-slate-800/60 text-slate-300'
+                  }`}
+                >
+                  <div className="flex items-start sm:items-center gap-2 min-w-0">
+                    <span className="text-slate-400 shrink-0 font-medium">{item.timestamp}</span>
+
+                    <span
+                      className={`px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0 ${
+                        item.severity === 'critical'
+                          ? 'bg-rose-950 text-rose-400 border border-rose-500/40'
+                          : item.severity === 'warning'
+                          ? 'bg-amber-950 text-amber-400 border border-amber-500/40'
+                          : 'bg-emerald-950 text-emerald-400 border border-emerald-500/40'
+                      }`}
+                    >
+                      {item.severity.toUpperCase()}
+                    </span>
+
+                    <span className="text-cyan-400 font-semibold shrink-0">[{item.source}]</span>
+
+                    <span className="text-slate-400 truncate">
+                      <span className="text-slate-200 font-medium">{item.target}</span>: {item.summary}
+                    </span>
+
+                    {item.mitreRef && (
+                      <span className="text-amber-400 shrink-0 text-[10px] font-medium hidden md:inline">
+                        [{item.mitreRef}]
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0 sm:self-center text-[10px] text-slate-400">
+                    {item.rawPayload && (
+                      <span className="truncate max-w-44 text-slate-400 hidden lg:inline font-mono">
+                        {item.rawPayload}
+                      </span>
+                    )}
+                    <span className="text-cyan-400 group-hover:underline flex items-center gap-0.5">
+                      <span>Inspect</span>
+                      <ChevronRight className="w-3 h-3" />
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+            <div ref={terminalBottomRef} />
+          </div>
+        </div>
+      )}
+    </aside>
   );
 }
 
@@ -2239,6 +3073,28 @@ export default function App() {
             </div>
           )}
         </main>
+
+        {/* ==================================================================== */}
+        {/* Active Threat Console (Live Stream & Typewriter Display)            */}
+        {/* ==================================================================== */}
+        <ActiveThreatConsole
+          onEventStreamed={(streamEvt) => {
+            if (streamEvt.severity === 'critical') {
+              setAlertTrendData((prev) =>
+                prev.map((d, idx) =>
+                  idx === prev.length - 1
+                    ? {
+                        ...d,
+                        criticalAlerts: d.criticalAlerts + 1,
+                        mitigated: d.mitigated + 1,
+                      }
+                    : d
+                )
+              );
+            }
+          }}
+          onInspectEvent={(evt) => setSelectedEvent(evt)}
+        />
       </div>
 
       {/* ==================================================================== */}
